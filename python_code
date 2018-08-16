@@ -1,0 +1,129 @@
+#!/usr/bin/python
+# -*- coding:utf8 -*-
+
+import psycopg2 as psy
+from deribit_api import RestClient
+import time
+import ssl
+from threading import Timer
+from datetime import datetime
+
+
+class Deribit:
+
+    context = ssl._create_unverified_context()
+
+    # 用户名：3RkEWsw1wFTkG，密码：ES2AVXHWB5QOOWBWMHYXHSJDUBOQAZSB)
+    # 连接deribit数据库
+    # 测试数据库：172.19.2.151
+    # 香港数据库：47.75.174.88
+
+    deribit = RestClient('3RkEWsw1wFTkG', 'ES2AVXHWB5QOOWBWMHYXHSJDUBOQAZSB', 'https://www.deribit.com')
+
+    def insert_orderbook(self, tim):
+
+        # 创建数据库deribit实例
+        try:
+            conn = psy.connect(database="pdt", user="user1", password="pass1", host="172.31.93.18", port="5432")
+            print('Opened database successfully')
+        except:
+            print('连接数据库出错')
+            print('正在尝试重新连接')
+            self.insert_orderbook(300)
+
+        # 创建cursor对象，用来在数据库里执行PostgreSQL命令。
+        try:
+            cur = conn.cursor()
+        except:
+            print('创建cursor对象出错')
+            print('正在重新尝试连接')
+            self.insert_orderbook(300)
+
+        # 调用changeorderbook函数，调整orderbook的格式
+        # 获取instrument
+        instrument = self.deribit.getinstruments()
+
+        # 获取所有instrument的名称
+        instrument_namelist = []
+        for i in range(len(instrument)):
+            instrument_namelist.append(instrument[i].get('instrumentName'))
+
+        # 获取定单薄
+        try:
+            for n in instrument_namelist:
+                orderbook, updatedtime = self.change_orderbook(self.deribit.getorderbook(n))
+                summary = self.deribit.getsummary(self.deribit.getorderbook(n)['instrument'])
+                # timestamp = ''.join(list(filter(lambda ch: ch in '0123456789', updatedtime)))
+                # 写入数据库
+                cur.execute("""INSERT INTO deribit
+                    (contract_type, data_type, exchange, order_meta_data, symbol, updated_time, summary_meta_data)
+                    VALUES(%s, %s, %s, %s, %s, %s, %s);""",
+                            (orderbook['contract_type'], orderbook['data_type'], orderbook['exchange'], str(orderbook),
+                             orderbook['symbol'], updatedtime, str(summary)))
+
+                conn.commit()
+
+            del summary
+            del orderbook
+            del updatedtime
+            del instrument
+            del instrument_namelist
+            del cur
+        except:
+            print('写入数据出错。')
+            self.insert_orderbook(300)
+        else:
+            conn.close()
+            timenow = time.ctime(time.time())
+            print("loop at", timenow)
+            global t
+            t = Timer(tim, self.insert_orderbook, (tim,))
+            t.start()
+
+    def change_orderbook(self, orderbook):
+
+        # 获取contract type
+        if len(orderbook['instrument'].split('-')) == 2:
+            contract = 'future'
+        else:
+            contract = 'option'
+
+        # 获取symbol
+        symbol = orderbook['instrument']
+
+        # 时间戳转时间
+        timeStamp = orderbook['tstamp']
+        updatedTime = datetime.fromtimestamp(timeStamp / 1000.0).strftime('%Y-%m-%d %H:%M:%S.%f')
+        timestamp = ''.join(list(filter(lambda ch: ch in '0123456789', updatedTime)))
+
+        # 获取ask数据
+        ask = []
+        for n in orderbook['asks']:
+            ask1 = [n['price'], n['quantity']]
+            ask.append(ask1)
+
+        # 获取bid数据
+        bid = []
+        for n in orderbook['bids']:
+            bid1 = [n['price'], n['quantity']]
+            bid.append(bid1)
+
+        # 构成meta_data数据
+        meta_data = orderbook
+
+        # 构成orderbook返回值
+        orderbook = {"contract_type": contract, "data_type": "contract", "exchange": "deribit", "updated_time": timestamp,
+                     "symbol": symbol, "meta_data": meta_data}
+
+        return orderbook, updatedTime
+
+    def close_database_connection(self):
+
+        self.conn.close()
+        print('Closed database successfully')
+
+if __name__ == '__main__':
+
+
+    D = Deribit()
+    D.insert_orderbook(300)
